@@ -1,0 +1,15 @@
+[package]
+name = "mozim-cli"
+version = "0.1.0"
+edition = "2021"
+description = "DHCP client command line tool"
+license = "Apache-2.0"
+homepage = "https://github.com/nispor/mozim-cli"
+
+[dependencies]
+nispor = "1.2.10"
+tokio = "1.25.0"
+mozim = "0.2"
+clap = { version = "4.1.4", features = ["cargo"] }
+log = "0.4.17"
+env_logger = { version = "0.10.0", default-features = false, features = ["color", "auto-color", "humantime"] }
