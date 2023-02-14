@@ -1,10 +1,14 @@
 [package]
 name = "mozim-cli"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "DHCP client command line tool"
 license = "Apache-2.0"
 homepage = "https://github.com/nispor/mozim-cli"
+
+[[bin]]
+name = "mzc"
+path = "src/main.rs"
 
 [dependencies]
 nispor = "1.2.10"
