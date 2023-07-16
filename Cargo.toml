@@ -11,7 +11,7 @@ name = "mzc"
 path = "src/main.rs"
 
 [dependencies]
-nispor = "1.2.10"
+nispor = "1.2.12"
 tokio = "1.25.0"
 mozim = "0.2.2"
 clap = { version = "4.1.4", features = ["cargo"] }
