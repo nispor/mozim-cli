@@ -1,43 +1,52 @@
 // SPDX-License-Identifier: Apache-2.0
 
+mod dhcpv6;
+
 use std::str::FromStr;
 
-use mozim::{DhcpV4Client, DhcpV4Config, DhcpV4Lease};
+use mozim::{DhcpV4Client, DhcpV4Config, DhcpV4Lease, DhcpV4State};
 use nispor::{
     AddressFamily, IfaceConf, IfaceState, IpAddrConf, IpConf, NetConf,
     NetState, NetStateFilter, NetStateIfaceFilter, NetStateRouteFilter,
     RouteConf, RouteProtocol,
 };
 
+use self::dhcpv6::{run_dhcpv6_cli, ARG_DISPATCH, ARG_IS_PD, ARG_IS_TA};
+
 const DEFAULT_METRIC: u32 = 500;
-const POLL_WAIT_TIME: u32 = 5;
 const APP_NAME: &str = "mzc";
 
 const SUBCOMMAND_RUN: &str = "run";
+const SUBCOMMAND_RUN6: &str = "run6";
 const SUBCOMMAND_PROXY: &str = "proxy";
 const SUBCOMMAND_CLEAN: &str = "clean";
 const SUBCOMMAND_VERSION: &str = "version";
-const IFNAME: &str = "ifname";
+pub(crate) const IFNAME: &str = "ifname";
 const ARG_TIMEOUT: &str = "timeout";
 const ARG_MAC: &str = "mac";
 const DEFAULT_TIMEOUT_STR: &str = "480";
 
-fn main() {
-    env_logger::Builder::new()
-        .filter(Some("nispor"), log::LevelFilter::Debug)
-        .filter(Some("mozim"), log::LevelFilter::Debug)
-        .filter(Some("mzc"), log::LevelFilter::Debug)
-        .init();
-
+#[tokio::main(flavor = "current_thread")]
+async fn main() {
     let matches = clap::Command::new(APP_NAME)
         .version(clap::crate_version!())
         .author("Gris Ge <fge@redhat.com>")
         .about("Command line of mozim")
+        .arg(
+            clap::Arg::new(ARG_TIMEOUT)
+                .help("Timeout, default to 480 seconds")
+                .long(ARG_TIMEOUT)
+                .short('t')
+                .value_parser(u32::from_str)
+                .action(clap::ArgAction::Set)
+                .default_value(DEFAULT_TIMEOUT_STR)
+                .global(true),
+        )
         .subcommand_required(true)
         .subcommand(
             clap::Command::new(SUBCOMMAND_RUN)
                 .alias("r")
-                .about("Run DHCP Client")
+                .about("Run DHCPv4 Client")
                 .arg(
                     clap::Arg::new(IFNAME)
                         .index(1)
@@ -47,15 +56,6 @@ fn main() {
                             clap::builder::NonEmptyStringValueParser::new(),
                         )
                         .action(clap::ArgAction::Set),
-                )
-                .arg(
-                    clap::Arg::new(ARG_TIMEOUT)
-                        .help("Timeout, default to 480 seconds")
-                        .long(ARG_TIMEOUT)
-                        .short('t')
-                        .value_parser(u32::from_str)
-                        .action(clap::ArgAction::Set)
-                        .default_value(DEFAULT_TIMEOUT_STR),
                 ),
         )
         .subcommand(
@@ -67,6 +67,7 @@ fn main() {
                         .index(1)
                         .help("Outgoing interface name")
                         .action(clap::ArgAction::Set)
+                        .required(true)
                         .value_parser(
                             clap::builder::NonEmptyStringValueParser::new(),
                         ),
@@ -99,9 +100,46 @@ fn main() {
                         .index(1)
                         .help("Interface name")
                         .action(clap::ArgAction::Set)
+                        .required(true)
                         .value_parser(
                             clap::builder::NonEmptyStringValueParser::new(),
                         ),
+                ),
+        )
+        .subcommand(
+            clap::Command::new(SUBCOMMAND_RUN6)
+                .alias("r6")
+                .about("Run DHCPv6 Client")
+                .arg(
+                    clap::Arg::new(IFNAME)
+                        .index(1)
+                        .help("Interface name")
+                        .action(clap::ArgAction::Set)
+                        .required(true)
+                        .value_parser(
+                            clap::builder::NonEmptyStringValueParser::new(),
+                        ),
+                )
+                .arg(
+                    clap::Arg::new(ARG_IS_PD)
+                        .long(ARG_IS_PD)
+                        .help("Request DHCPv6 prefix delegation only")
+                        .action(clap::ArgAction::Set)
+                        .value_parser(u8::from_str),
+                )
+                .arg(
+                    clap::Arg::new(ARG_IS_TA)
+                        .long(ARG_IS_TA)
+                        .help("Request DHCPv6 temporary addresses only")
+                        .action(clap::ArgAction::SetTrue),
+                )
+                .arg(
+                    clap::Arg::new(ARG_DISPATCH)
+                        .long(ARG_DISPATCH)
+                        .help(
+                            "Dispatch script path, only for prefix delegation",
+                        )
+                        .action(clap::ArgAction::Set),
                 ),
         )
         .subcommand(
@@ -111,51 +149,49 @@ fn main() {
         )
         .get_matches();
 
+    init_env_logger();
+
+    let timeout: u32 = *matches.get_one(ARG_TIMEOUT).unwrap();
+
     if let Some(matches) = matches.subcommand_matches(SUBCOMMAND_RUN) {
-        let timeout: u32 = *matches.get_one(ARG_TIMEOUT).unwrap();
         let iface_name: &String = matches.get_one(IFNAME).unwrap();
-        run(iface_name, timeout);
+        run_dhcpv4_cli(iface_name, timeout).await;
     } else if let Some(matches) = matches.subcommand_matches(SUBCOMMAND_PROXY) {
-        let timeout: u32 = *matches.get_one(ARG_TIMEOUT).unwrap();
         let iface_name: &String = matches.get_one(IFNAME).unwrap();
         let mac: &String = matches.get_one(ARG_MAC).unwrap();
-        proxy(iface_name, mac, timeout);
+        proxy(iface_name, mac, timeout).await;
     } else if let Some(matches) = matches.subcommand_matches(SUBCOMMAND_CLEAN) {
         let iface_name: &String = matches.get_one(IFNAME).unwrap();
-        purge_dhcp_ip_route(iface_name);
+        purge_dhcp_ip_route(iface_name).await;
+    } else if let Some(matches) = matches.subcommand_matches(SUBCOMMAND_RUN6) {
+        run_dhcpv6_cli(matches).await;
     } else if matches.subcommand_matches(SUBCOMMAND_VERSION).is_some() {
         println!("{} {}", APP_NAME, clap::crate_version!());
     }
 }
 
-fn run(iface_name: &str, timeout: u32) {
-    purge_dhcp_ip_route(iface_name);
+async fn run_dhcpv4_cli(iface_name: &str, timeout: u32) {
+    purge_dhcp_ip_route(iface_name).await;
 
     let mut config = DhcpV4Config::new(iface_name);
     config.set_host_name("Gris-Laptop");
     config.use_host_name_as_client_id();
-    config.set_timeout(timeout);
-    let mut cli = DhcpV4Client::init(config, None).unwrap();
+    config.set_timeout_sec(timeout);
+    let mut cli = DhcpV4Client::init(config, None).await.unwrap();
 
     loop {
-        match cli.poll(POLL_WAIT_TIME) {
-            Ok(events) => {
-                for event in events {
-                    match cli.process(event) {
-                        Ok(Some(lease)) => {
-                            apply_dhcp_ip_route(iface_name, &lease);
-                        }
-                        Ok(None) => (),
-                        Err(_) => {
-                            purge_dhcp_ip_route(iface_name);
-                            return;
-                        }
-                    }
-                }
+        let result = cli.run().await;
+        match result {
+            Ok(DhcpV4State::Done(lease)) => {
+                apply_dhcp_ip_route(iface_name, &lease).await;
             }
-            Err(_) => {
-                purge_dhcp_ip_route(iface_name);
-                break;
+            Ok(s) => {
+                log::info!("DHCPv4 on {iface_name} reach state: {s}");
+            }
+            Err(e) => {
+                log::error!("DHCPv4 on {iface_name} failed: {e}");
+                purge_dhcp_ip_route(iface_name).await;
+                return;
             }
         }
     }
@@ -171,12 +207,12 @@ fn new_net_conf_with_ip_conf(iface_name: &str, ip_conf: IpConf) -> NetConf {
     net_conf
 }
 
-fn apply_dhcp_ip_route(iface_name: &str, lease: &DhcpV4Lease) {
+async fn apply_dhcp_ip_route(iface_name: &str, lease: &DhcpV4Lease) {
     let mut ip_addr_conf = IpAddrConf::default();
     ip_addr_conf.address = lease.yiaddr.to_string();
     ip_addr_conf.prefix_len = get_prefix_len(&lease.subnet_mask);
-    ip_addr_conf.valid_lft = format!("{}sec", lease.lease_time);
-    ip_addr_conf.preferred_lft = format!("{}sec", lease.lease_time);
+    ip_addr_conf.valid_lft = format!("{}sec", lease.lease_time_sec);
+    ip_addr_conf.preferred_lft = format!("{}sec", lease.lease_time_sec);
     let mut ip_conf = IpConf::default();
     ip_conf.addresses = vec![ip_addr_conf];
     let mut net_conf = new_net_conf_with_ip_conf(iface_name, ip_conf);
@@ -197,7 +233,7 @@ fn apply_dhcp_ip_route(iface_name: &str, lease: &DhcpV4Lease) {
     }
 
     log::debug!("Applying {:?}", net_conf);
-    net_conf.apply().unwrap();
+    net_conf.apply_async().await.unwrap();
 }
 
 fn get_prefix_len(ip: &std::net::Ipv4Addr) -> u8 {
@@ -205,7 +241,7 @@ fn get_prefix_len(ip: &std::net::Ipv4Addr) -> u8 {
 }
 
 // Remove all dynamic IP and dhcp routes of specified interface
-fn purge_dhcp_ip_route(iface_name: &str) {
+async fn purge_dhcp_ip_route(iface_name: &str) {
     let mut iface_filter = NetStateIfaceFilter::minimum();
     iface_filter.iface_name = Some(iface_name.to_string());
     iface_filter.include_ip_address = true;
@@ -216,7 +252,7 @@ fn purge_dhcp_ip_route(iface_name: &str) {
     filter.iface = Some(iface_filter);
     filter.route = Some(route_filter);
 
-    let state = NetState::retrieve_with_filter(&filter).unwrap();
+    let state = NetState::retrieve_with_filter_async(&filter).await.unwrap();
     if let Some(ip_info) =
         state.ifaces.get(iface_name).and_then(|i| i.ipv4.as_ref())
     {
@@ -237,7 +273,8 @@ fn purge_dhcp_ip_route(iface_name: &str) {
             let mut ip_conf = IpConf::default();
             ip_conf.addresses = addrs_to_remove;
             new_net_conf_with_ip_conf(iface_name, ip_conf)
-                .apply()
+                .apply_async()
+                .await
                 .unwrap();
         }
     }
@@ -259,7 +296,7 @@ fn purge_dhcp_ip_route(iface_name: &str) {
     }
     let mut net_conf = NetConf::default();
     net_conf.routes = Some(routes_to_remove);
-    net_conf.apply().unwrap();
+    net_conf.apply_async().await.unwrap();
 }
 
 fn gen_rt_conf(
@@ -280,31 +317,36 @@ fn gen_rt_conf(
     rt
 }
 
-fn proxy(iface_name: &str, mac: &str, timeout: u32) {
-    let mut config = DhcpV4Config::new_proxy(iface_name, mac);
-    config.set_timeout(timeout);
-    let mut cli = DhcpV4Client::init(config, None).unwrap();
+async fn proxy(iface_name: &str, mac: &str, timeout: u32) {
+    let mut config = DhcpV4Config::new_proxy(iface_name, mac).unwrap();
+    config.set_timeout_sec(timeout);
+    let mut cli = DhcpV4Client::init(config, None).await.unwrap();
 
     loop {
-        match cli.poll(POLL_WAIT_TIME) {
-            Ok(events) => {
-                for event in events {
-                    match cli.process(event) {
-                        Ok(Some(lease)) => {
-                            println!("{lease:?}");
-                        }
-                        Ok(None) => (),
-                        Err(e) => {
-                            eprintln!("Error {e:?}");
-                            return;
-                        }
-                    }
-                }
+        let result = cli.run().await;
+        match result {
+            Ok(DhcpV4State::Done(lease)) => {
+                println!("{lease:?}");
+            }
+            Ok(s) => {
+                log::info!(
+                    "DHCPv4 proxy on {iface_name} for {mac} reach state: {s}"
+                );
             }
             Err(e) => {
-                eprintln!("Error {e:?}");
+                log::error!(
+                    "DHCPv4 proxy on {iface_name} for {mac} failed: {e:?}"
+                );
                 break;
             }
         }
     }
+}
+
+fn init_env_logger() {
+    env_logger::Builder::new()
+        .filter(Some("nispor"), log::LevelFilter::Debug)
+        .filter(Some("mozim"), log::LevelFilter::Debug)
+        .filter(Some("mzc"), log::LevelFilter::Debug)
+        .init();
 }
