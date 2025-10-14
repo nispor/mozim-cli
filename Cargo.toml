@@ -12,8 +12,12 @@ path = "src/main.rs"
 
 [dependencies]
 nispor = "1.2.10"
-tokio = "1.25.0"
-mozim = "0.2.2"
+tokio = { version = "1.19", features = ["macros", "rt", "net", "time"] }
+mozim = "0.3.0"
 clap = { version = "4.1.4", features = ["cargo"] }
 log = "0.4.17"
-env_logger = { version = "0.10.0", default-features = false, features = ["color", "auto-color", "humantime"] }
+
+[dependencies.env_logger]
+version = "0.11.0"
+default-features = false
+features = ["color", "auto-color", "humantime"]
